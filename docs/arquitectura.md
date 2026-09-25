@@ -12,7 +12,7 @@ cambió, y permite restaurar archivos que falten en el PC.
 ## Mapa del proyecto
 
 ```
-Kopia_Desk_Beta_1/
+Kopia_Desk_Beta_2/
 ├── main.js                  ← Proceso principal de Electron (Node.js, acceso total al SO)
 ├── preload.js                ← Puente seguro entre main y la interfaz
 ├── package.json               ← Nombre, versión, dependencias y scripts (npm start / npm run build)

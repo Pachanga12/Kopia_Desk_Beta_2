@@ -23,6 +23,7 @@ const {
   finishJournal,
   peekJournals,
   checkJournals,
+  TMP_SUFFIX,
 } = require("../lib/core.js");
 
 function makeTempDir() {
@@ -281,11 +282,13 @@ test("journal: limpia sólo los archivos que quedaron pendientes al interrumpirs
   assert.ok(journalPath);
 
   // Simular la interrupción: a.txt y sub/b.txt se copiaron completos (y quedaron
-  // registrados como done); c.txt quedó a medias sin registrarse.
+  // registrados como done); c.txt estaba sobrescribiéndose: su versión anterior
+  // buena sigue en c.txt y lo parcial quedó en el temporal.
   fs.writeFileSync(path.join(destRoot, "a.txt"), "completo");
   fs.mkdirSync(path.join(destRoot, "sub"), { recursive: true });
   fs.writeFileSync(path.join(destRoot, "sub", "b.txt"), "completo");
-  fs.writeFileSync(path.join(destRoot, "c.txt"), "parcial");
+  fs.writeFileSync(path.join(destRoot, "c.txt"), "versión anterior buena");
+  fs.writeFileSync(path.join(destRoot, "c.txt" + TMP_SUFFIX), "parcial");
   appendJournalDone(journalPath, "a.txt");
   appendJournalDone(journalPath, "sub/b.txt");
 
@@ -296,7 +299,12 @@ test("journal: limpia sólo los archivos que quedaron pendientes al interrumpirs
 
   assert.ok(fs.existsSync(path.join(destRoot, "a.txt")), "los archivos completos no deben borrarse");
   assert.ok(fs.existsSync(path.join(destRoot, "sub", "b.txt")), "los archivos completos no deben borrarse");
-  assert.ok(!fs.existsSync(path.join(destRoot, "c.txt")), "el archivo parcial debe limpiarse");
+  assert.ok(!fs.existsSync(path.join(destRoot, "c.txt" + TMP_SUFFIX)), "el temporal parcial debe limpiarse");
+  assert.equal(
+    fs.readFileSync(path.join(destRoot, "c.txt"), "utf-8"),
+    "versión anterior buena",
+    "problema 5: la única copia buena no debe borrarse"
+  );
   assert.equal(fs.readdirSync(jDir).length, 0, "el journal procesado debe eliminarse");
 });
 
@@ -309,21 +317,22 @@ test("journal: peekJournals informa lo pendiente sin borrar nada", (t) => {
     { relativeDest: "a.txt" },
     { relativeDest: "b.txt" },
   ]);
-  fs.writeFileSync(path.join(destRoot, "b.txt"), "parcial");
+  const partial = path.join(destRoot, "b.txt" + TMP_SUFFIX);
+  fs.writeFileSync(partial, "parcial");
   appendJournalDone(journalPath, "a.txt");
 
-  const peek = peekJournals(jDir);
+  const peek = peekJournals(jDir, destRoot);
   assert.equal(peek.found, 1);
   assert.equal(peek.pendingFiles, 1);
   assert.ok(peek.lastInterruptedAt);
 
-  assert.ok(fs.existsSync(path.join(destRoot, "b.txt")), "peek no debe borrar el archivo parcial");
+  assert.ok(fs.existsSync(partial), "peek no debe borrar el archivo parcial");
   assert.ok(fs.existsSync(journalPath), "peek no debe borrar el journal");
 
   // La limpieza real sigue funcionando después del peek
   const result = checkJournals(jDir, destRoot);
   assert.equal(result.filesCleaned, 1);
-  assert.ok(!fs.existsSync(path.join(destRoot, "b.txt")));
+  assert.ok(!fs.existsSync(partial));
 });
 
 test("journal: peekJournals sin carpeta de journal no encuentra nada", () => {
@@ -390,6 +399,11 @@ test("pickConcurrency: SSD con archivos chicos usa 8", () => {
 
 test("pickConcurrency: NVMe por busType cuenta como SSD aunque mediaType sea desconocido", () => {
   assert.equal(pickConcurrency({ mediaType: "Unknown", busType: "NVMe" }, 10 * 1024 * 1024), 4);
+});
+
+test("pickConcurrency: pendrive USB sin tipo de medio copia de a uno", () => {
+  assert.equal(pickConcurrency({ mediaType: "Unspecified", busType: "USB" }, 1024), 1);
+  assert.equal(pickConcurrency({ mediaType: "SSD", busType: "USB" }, 1024), 8);
 });
 
 test("pickConcurrency: disco desconocido usa valores intermedios", () => {

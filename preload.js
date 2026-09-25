@@ -22,6 +22,13 @@ contextBridge.exposeInMainWorld("kopiaAPI", {
 
   planConcurrency: (driveRoot, avgFileSize) => ipcRenderer.invoke("backup:plan-concurrency", driveRoot, avgFileSize),
 
+  encryptionStatus: (driveRoot) => ipcRenderer.invoke("encryption:status", driveRoot),
+  openBitLockerPanel: () => ipcRenderer.invoke("encryption:open-panel"),
+  encryptDrive: (driveRoot, options) => ipcRenderer.invoke("encryption:encrypt", driveRoot, options),
+  lockDrive: (driveRoot, volumeId) => ipcRenderer.invoke("encryption:lock", driveRoot, volumeId),
+  unlockDrive: (driveRoot) => ipcRenderer.invoke("encryption:unlock", driveRoot),
+  encryptionJobStatus: (driveRoot, action) => ipcRenderer.invoke("encryption:job-status", driveRoot, action),
+
   journalPeek: (destRoot) => ipcRenderer.invoke("journal:peek", destRoot),
   journalCheck: (destRoot) => ipcRenderer.invoke("journal:check", destRoot),
 
