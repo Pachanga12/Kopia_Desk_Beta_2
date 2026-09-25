@@ -1036,6 +1036,130 @@ button:disabled {
   margin-top: 12px;
 }
 
+/* Estado de cifrado del destino: borde izquierdo según el riesgo */
+.encryption-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--outline);
+  background: var(--surface-low);
+  font-size: 0.82rem;
+}
+
+.encryption-panel p {
+  margin: 0;
+}
+
+.encryption-panel .notice-actions {
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.encryption-panel[data-state="on"] {
+  border-left-color: var(--good);
+}
+
+.encryption-panel[data-state="encrypting"],
+.encryption-panel[data-state="suspended"],
+.encryption-panel[data-state="decrypting"] {
+  border-left-color: var(--warn);
+}
+
+.encryption-panel[data-state="off"],
+.encryption-panel[data-state="waiting"],
+.encryption-panel[data-state="locked"] {
+  border-left-color: var(--bad);
+  background: var(--bad-tint);
+}
+
+.encryption-panel[data-state="job"] {
+  border-left-color: var(--primary);
+}
+
+.encryption-progress {
+  margin-top: 10px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.encryption-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--primary);
+  transition: width 0.4s ease;
+}
+
+/* Ventana de confirmación (dialog nativo) */
+.kd-dialog {
+  max-width: 540px;
+  width: calc(100% - 48px);
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-flyout);
+}
+
+.kd-dialog::backdrop {
+  background: rgba(10, 14, 22, 0.55);
+}
+
+.kd-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 1.15rem;
+}
+
+.kd-dialog p {
+  margin: 0 0 10px;
+  font-size: 0.88rem;
+  color: var(--ink-variant);
+}
+
+.kd-steps {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.kd-scope {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.kd-scope legend {
+  padding: 0 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.kd-scope label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 6px 0;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.kd-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.kd-dialog-actions button {
+  height: 34px;
+  padding: 0 18px;
+}
+
 .warning-ack {
   display: flex;
   align-items: center;

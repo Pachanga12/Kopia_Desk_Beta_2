@@ -17,6 +17,12 @@ const state = {
   compareSelection: {},
   journalPending: false,
   suspiciousAcknowledged: false,
+  // Estado de cifrado del destino: null mientras se consulta o sin destino.
+  encryption: null,
+  // "Continuar sin cifrar" confirmado para el destino elegido.
+  encryptionAck: false,
+  // Operación de BitLocker en curso: { root, action: "Encrypt"|"Lock", phase, percent, startedAt }.
+  encryptionJob: null,
 };
 
 const els = {
@@ -40,6 +46,24 @@ const els = {
   usageFill: document.querySelector("#usageFill"),
   repoPathHint: document.querySelector("#repoPathHint"),
   spaceWarning: document.querySelector("#spaceWarning"),
+  fsWarning: document.querySelector("#fsWarning"),
+  encryptionPanel: document.querySelector("#encryptionPanel"),
+  encryptionStatus: document.querySelector("#encryptionStatus"),
+  encryptionOpenBtn: document.querySelector("#encryptionOpenBtn"),
+  encryptionRecheckBtn: document.querySelector("#encryptionRecheckBtn"),
+  encryptionAckLabel: document.querySelector("#encryptionAckLabel"),
+  encryptionAck: document.querySelector("#encryptionAck"),
+  encryptionProgress: document.querySelector("#encryptionProgress"),
+  encryptionProgressFill: document.querySelector("#encryptionProgressFill"),
+  encryptBtn: document.querySelector("#encryptBtn"),
+  unlockBtn: document.querySelector("#unlockBtn"),
+  lockBtn: document.querySelector("#lockBtn"),
+  lockAfterLabel: document.querySelector("#lockAfterLabel"),
+  lockAfterToggle: document.querySelector("#lockAfterToggle"),
+  encryptDialog: document.querySelector("#encryptDialog"),
+  encryptDialogDrive: document.querySelector("#encryptDialogDrive"),
+  encryptDialogCancel: document.querySelector("#encryptDialogCancel"),
+  encryptDialogConfirm: document.querySelector("#encryptDialogConfirm"),
   suspiciousWarning: document.querySelector("#suspiciousWarning"),
   suspiciousWarningText: document.querySelector("#suspiciousWarningText"),
   suspiciousAckCheckbox: document.querySelector("#suspiciousAckCheckbox"),
@@ -136,6 +160,7 @@ function setBusy(busy) {
   els.tabRestoreFull.disabled = busy;
   updateCounts();
   updateCompareBtn();
+  renderEncryptionPanel();
 }
 
 function totalChanges() {
@@ -223,6 +248,55 @@ function updateSuspiciousStatus() {
   return state.suspiciousAcknowledged;
 }
 
+// Archivos seleccionados que no entran en el sistema de archivos destino
+// (FAT32: 4 GB por archivo). Se avisan antes de copiar y se omiten.
+function oversizedSelectedFiles() {
+  const max = state.destination && state.destination.maxFileSize;
+  if (!max) return [];
+  return state.comparisons.flatMap((c) =>
+    [...(c.decisions.new ? c.newFiles : []), ...(c.decisions.changed ? c.changedFiles : [])].filter(
+      (f) => f.size > max
+    )
+  );
+}
+
+function updateFsWarning() {
+  const tooBig = oversizedSelectedFiles();
+  if (!tooBig.length) {
+    els.fsWarning.hidden = true;
+    return;
+  }
+  els.fsWarning.hidden = false;
+  els.fsWarning.textContent =
+    "El disco destino es " + state.destination.fileSystem + " y no admite archivos de 4 GB o más: " +
+    tooBig.length + " archivo(s) se omitirán (" + tooBig.slice(0, 3).map((f) => f.path).join(", ") +
+    (tooBig.length > 3 ? ", ..." : "") + "). Usa un disco NTFS o exFAT para respaldarlos.";
+}
+
+// Cifrado: un disco sin cifrar exige confirmar "Continuar sin cifrar"; uno
+// bloqueado no se puede usar hasta desbloquearlo desde el Explorador.
+// ¿El destino elegido es del disco del sistema (o de un disco no identificado)?
+// Se sabe por la lista de discos o, si no, por la respuesta del proceso principal.
+function isSystemProtectedDestination() {
+  const d = state.destination;
+  if (!d) return false;
+  if (d.isSystemDrive || d.onSystemDisk !== false) return true;
+  return !!(state.encryption && state.encryption.systemProtected === true);
+}
+
+function encryptionAllowsBackup() {
+  const enc = state.encryption;
+  const job = currentEncryptionJob();
+  if (job && job.action === "Lock") return false; // se está bloqueando: no copiar
+  // En el disco del sistema no hay opción de cifrar, así que tampoco se pide
+  // confirmar "continuar sin cifrar" (ya se avisa que no es buen destino).
+  if (isSystemProtectedDestination()) return true;
+  if (!enc) return true; // consultando o sin datos: no se bloquea
+  if (enc.state === "locked") return false;
+  if (enc.state === "off" || enc.state === "waiting") return state.encryptionAck;
+  return true;
+}
+
 function updateCounts() {
   els.sourceCount.textContent = state.sources.length;
   els.changeCount.textContent = totalChanges();
@@ -230,7 +304,14 @@ function updateCounts() {
   els.dedupedCount.textContent = state.deduped > 0 ? state.deduped : "—";
   const spaceOk = updateSpaceStatus();
   const suspiciousOk = updateSuspiciousStatus();
-  els.backupBtn.disabled = state.busy || !state.destination || totalChanges() === 0 || !spaceOk || !suspiciousOk;
+  updateFsWarning();
+  els.backupBtn.disabled =
+    state.busy ||
+    !state.destination ||
+    totalChanges() === 0 ||
+    !spaceOk ||
+    !suspiciousOk ||
+    !encryptionAllowsBackup();
 }
 
 function formatBytes(bytes) {
@@ -547,11 +628,22 @@ async function loadDrives() {
         " (" +
         formatBytes(drive.free) +
         " libres)" +
-        (drive.isSystemDrive ? " — disco del sistema, no recomendado" : "");
+        (drive.isSystemDrive
+          ? " — disco del sistema, no recomendado"
+          : drive.onSystemDisk
+            ? " — en el disco del sistema, no recomendado"
+            : "");
       option.dataset.free = drive.free;
       option.dataset.total = drive.total;
       option.dataset.label = drive.label || "";
       option.dataset.isSystemDrive = drive.isSystemDrive ? "1" : "";
+      option.dataset.fileSystem = drive.fileSystem || "";
+      option.dataset.volumeId = drive.volumeId || "";
+      // "1" disco del sistema, "0" otro disco, "" no se pudo saber.
+      option.dataset.onSystemDisk = drive.onSystemDisk === true ? "1" : drive.onSystemDisk === false ? "0" : "";
+      option.dataset.maxFileSize = (drive.fsInfo && drive.fsInfo.maxFileSize) || "";
+      option.dataset.hardlinks = drive.fsInfo && drive.fsInfo.supportsHardlinks === false ? "" : "1";
+      option.dataset.journaled = drive.fsInfo && drive.fsInfo.journaled === false ? "" : "1";
       els.destinationSelect.appendChild(option);
     });
 
@@ -596,6 +688,7 @@ async function selectDestination() {
     els.repoPathHint.textContent = "";
     els.journalNotice.hidden = true;
     state.journalPending = false;
+    resetEncryptionPanel();
     updateCounts();
     refreshActiveExtraTab();
     return;
@@ -607,10 +700,30 @@ async function selectDestination() {
     free: Number(option.dataset.free || 0),
     total: Number(option.dataset.total || 0),
     isSystemDrive: option.dataset.isSystemDrive === "1",
+    fileSystem: option.dataset.fileSystem || "",
+    // Identidad del volumen elegido: al cifrar o bloquear se comprueba que la
+    // letra siga siendo este mismo disco.
+    volumeId: option.dataset.volumeId || "",
+    onSystemDisk: option.dataset.onSystemDisk === "1" ? true : option.dataset.onSystemDisk === "0" ? false : null,
+    maxFileSize: Number(option.dataset.maxFileSize || 0),
+    supportsHardlinks: option.dataset.hardlinks === "1",
+    journaled: option.dataset.journaled === "1",
   };
   els.destinationLabel.textContent =
     state.destination.root + " seleccionado — " + formatBytes(state.destination.free) + " libres" +
+    (state.destination.fileSystem ? " · " + state.destination.fileSystem : "") +
     (state.destination.isSystemDrive ? " (disco del sistema)" : "");
+
+  if (state.destination.fileSystem && !state.destination.journaled) {
+    log(
+      "El disco " + state.destination.root + " usa " + state.destination.fileSystem +
+        ": no admite hardlinks (la deduplicación copiará normal) y es más sensible a desconexiones " +
+        "sin expulsar. " + (state.destination.maxFileSize ? "Además, no admite archivos de 4 GB o más. " : "") +
+        "Para backups se recomienda NTFS."
+    );
+  }
+
+  checkEncryption();
 
   const usedPct =
     state.destination.total > 0
@@ -665,6 +778,318 @@ async function selectDestination() {
   saveState();
 }
 
+// --- Cifrado del disco destino (BitLocker) -------------------------------------
+// El estado se consulta sin permisos de administrador. Cifrar y bloquear piden
+// el permiso de Windows (UAC) y los hace el ayudante elevado: la contraseña y
+// la clave de recuperación se manejan en SUS ventanas, nunca en esta interfaz.
+// Desbloquear usa el cuadro de contraseña del propio Windows, sin UAC.
+
+const ENCRYPTION_TEXT = {
+  on: "Cifrado con BitLocker y desbloqueado.",
+  encrypting: "Cifrándose con BitLocker. Puedes copiar, pero irá más lento hasta que termine. No desconectes el disco.",
+  decrypting: "BitLocker se está desactivando en este disco: pronto quedará sin cifrar.",
+  suspended: "BitLocker está suspendido: el disco está cifrado pero sin protección activa. Reanúdalo desde el panel de BitLocker.",
+  locked: "Disco cifrado y bloqueado. Desbloquéalo para poder copiar.",
+  off: "Este disco NO está cifrado: si se pierde, cualquiera puede leer tus archivos y sus rutas.",
+  waiting: "BitLocker está a medio configurar (sin protector activo): el disco no está protegido.",
+  unsupported: "Este disco no admite BitLocker.",
+  unknown: "No se pudo determinar si el disco está cifrado.",
+};
+
+const JOB_TEXT = {
+  launching: "Esperando el permiso de administrador de Windows...",
+  "waiting-password": "Escribe la contraseña en la ventana de Kopia Desk.",
+  "waiting-recovery": "Guarda la clave de recuperación en la ventana de Kopia Desk (fuera de este disco).",
+  enabling: "Activando BitLocker...",
+  encrypting: "Cifrando el disco. Puedes seguir usándolo; no lo desconectes.",
+  locking: "Bloqueando el disco...",
+  unlocking: "Escribe la contraseña en el cuadro de Windows para desbloquear el disco.",
+};
+
+const JOB_POLL_MS = 1500;
+// Si el ayudante arrancó pero no informa nada en este tiempo, algo falló.
+const JOB_SILENCE_TIMEOUT_MS = 3 * 60 * 1000;
+
+// La operación en curso, sólo si es del disco elegido ahora.
+function currentEncryptionJob() {
+  const job = state.encryptionJob;
+  return job && state.destination && job.root === state.destination.root ? job : null;
+}
+
+function resetEncryptionPanel() {
+  state.encryption = null;
+  state.encryptionAck = false;
+  els.encryptionAck.checked = false;
+  els.encryptionPanel.hidden = true;
+}
+
+function renderEncryptionPanel() {
+  const enc = state.encryption;
+  els.encryptionPanel.hidden = !state.destination;
+  if (!state.destination) return;
+
+  const buttons = [els.encryptBtn, els.unlockBtn, els.lockBtn, els.encryptionOpenBtn];
+  buttons.forEach((b) => (b.hidden = true));
+  els.encryptionProgress.hidden = true;
+  els.lockAfterLabel.hidden = true;
+  els.encryptionAckLabel.hidden = true;
+  els.encryptionRecheckBtn.hidden = false;
+
+  const job = currentEncryptionJob();
+  if (job) {
+    els.encryptionPanel.dataset.state = "job";
+    let text = JOB_TEXT[job.phase] || "Trabajando con BitLocker...";
+    if (job.phase === "encrypting" && typeof job.percent === "number") {
+      text = "Cifrando el disco: " + job.percent.toFixed(1) + "%. Puedes seguir usándolo; no lo desconectes.";
+      els.encryptionProgress.hidden = false;
+      els.encryptionProgressFill.style.width = Math.min(100, job.percent) + "%";
+    }
+    els.encryptionStatus.textContent = text;
+    els.encryptionRecheckBtn.hidden = true;
+    return;
+  }
+
+  // Disco del sistema (o disco no identificado): ninguna opción de cifrado,
+  // ni botones ni la casilla de "continuar sin cifrar"; sólo una nota neutra.
+  // No depende de la consulta de cifrado: se sabe desde la lista de discos.
+  if (isSystemProtectedDestination()) {
+    els.encryptionPanel.dataset.state = "system";
+    els.encryptionStatus.textContent =
+      state.destination.isSystemDrive || state.destination.onSystemDisk === true
+        ? "Disco del sistema (donde está instalado Windows): Kopia Desk no ofrece cifrarlo ni bloquearlo. " +
+          "Tampoco se recomienda como destino de backup: usa un disco externo o USB."
+        : "No se pudo identificar en qué disco físico está esta unidad: por seguridad Kopia Desk no ofrece cifrarla ni bloquearla.";
+    els.encryptionRecheckBtn.hidden = true;
+    return;
+  }
+
+  if (!enc) {
+    els.encryptionPanel.dataset.state = "checking";
+    els.encryptionStatus.textContent = "Comprobando cifrado del disco...";
+    els.encryptionRecheckBtn.hidden = true;
+    return;
+  }
+
+  els.encryptionPanel.dataset.state = enc.state;
+  let text = ENCRYPTION_TEXT[enc.state] || ENCRYPTION_TEXT.unknown;
+  const unprotected = enc.state === "off" || enc.state === "waiting";
+  if (unprotected && !enc.canEncrypt) {
+    text +=
+      " Tu edición de Windows (Home) no puede cifrar discos con BitLocker, aunque sí abrir los ya cifrados. " +
+      "Alternativas: cifrarlo desde un equipo con Windows Pro, actualizar a Pro o usar VeraCrypt.";
+  }
+  els.encryptionStatus.textContent = text;
+
+  // "waiting" (a medio configurar) se resuelve mejor en el panel de Windows.
+  els.encryptBtn.hidden = !(enc.state === "off" && enc.canEncrypt);
+  els.unlockBtn.hidden = enc.state !== "locked";
+  els.lockBtn.hidden = enc.state !== "on";
+  els.lockAfterLabel.hidden = !(enc.state === "on" || enc.state === "encrypting");
+  els.encryptionOpenBtn.hidden = !(enc.canEncrypt && (enc.state === "suspended" || enc.state === "waiting"));
+  els.encryptionAckLabel.hidden = !unprotected;
+
+  // Durante un backup no se cifra ni se bloquea el disco que se está usando.
+  [els.encryptBtn, els.unlockBtn, els.lockBtn].forEach((b) => (b.disabled = state.busy));
+}
+
+async function checkEncryption() {
+  if (!state.destination) return;
+  const root = state.destination.root;
+  state.encryption = null;
+  state.encryptionAck = false;
+  els.encryptionAck.checked = false;
+  renderEncryptionPanel();
+  updateCounts();
+  let status;
+  try {
+    status = await window.kopiaAPI.encryptionStatus(root);
+  } catch {
+    status = { state: "unknown", canEncrypt: false };
+  }
+  // El usuario pudo cambiar de disco mientras se consultaba.
+  if (!state.destination || state.destination.root !== root) return;
+  state.encryption = status;
+  renderEncryptionPanel();
+  updateCounts();
+}
+
+// Tras bloquear o desbloquear cambian el espacio y el sistema de archivos
+// visibles: se releen los discos y se vuelve a elegir el mismo.
+async function reloadDrivesKeeping(root) {
+  state._pendingDestination = root;
+  await loadDrives();
+  applyPendingDestination();
+}
+
+function setEncryptionJob(job) {
+  state.encryptionJob = job;
+  renderEncryptionPanel();
+  updateCounts();
+}
+
+// Sigue el archivo de estado del ayudante hasta que termine. Devuelve la fase
+// final ("done", "cancelled", "error", "disconnected" o "timeout").
+async function followEncryptionJob(job) {
+  let lastSignal = Date.now();
+  let lastTs = null;
+  let deadPolls = 0;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, JOB_POLL_MS));
+    let status = null;
+    let alive = null;
+    try {
+      const res = await window.kopiaAPI.encryptionJobStatus(job.root, job.action);
+      status = res.status;
+      alive = res.alive;
+    } catch {
+      // disco no disponible un momento: se reintenta
+    }
+    if (status && status.ts !== lastTs) {
+      lastTs = status.ts;
+      lastSignal = Date.now();
+      job.phase = status.phase;
+      job.percent = typeof status.percent === "number" ? status.percent : job.percent;
+      job.error = status.error;
+      job.code = status.code;
+      if (state.encryptionJob === job) renderEncryptionPanel();
+    }
+    if (["done", "cancelled", "error", "disconnected"].includes(job.phase)) return job.phase;
+    // El ayudante se cerró sin informar un final (cerrado a la fuerza, fallo).
+    // Se espera una lectura más por si escribió su último estado al salir.
+    if (alive === false && ++deadPolls >= 2) {
+      job.phase = "error";
+      job.error = "La ventana de BitLocker se cerró antes de terminar. Pulsa \"Comprobar de nuevo\" para ver el estado del disco.";
+      return "error";
+    }
+    // Mientras hay una ventana abierta esperando al usuario no hay límite.
+    const waitingUser = job.phase === "waiting-password" || job.phase === "waiting-recovery";
+    if (!waitingUser && Date.now() - lastSignal > JOB_SILENCE_TIMEOUT_MS) return "timeout";
+  }
+}
+
+async function runHelperJob(action, start) {
+  const root = state.destination.root;
+  const job = { root, action, phase: "launching", percent: null };
+  setEncryptionJob(job);
+  try {
+    const launched = await start(root);
+    if (!launched.started) {
+      log(
+        launched.code === "uac-cancelled"
+          ? "Operación cancelada: no se dio el permiso de administrador de Windows."
+          : "No se pudo iniciar BitLocker: " + launched.error
+      );
+      return "not-started";
+    }
+    return await followEncryptionJob(job);
+  } catch (error) {
+    log("Error de BitLocker: " + error.message);
+    return "error";
+  } finally {
+    if (state.encryptionJob === job) setEncryptionJob(null);
+    if (job.phase === "error" && job.error) log("BitLocker: " + job.error);
+  }
+}
+
+async function startEncryption(fullDisk) {
+  if (!state.destination) return;
+  const root = state.destination.root;
+  log("Cifrado de " + root + ": acepta el permiso de administrador de Windows para continuar.");
+  const volumeId = state.destination.volumeId;
+  const result = await runHelperJob("Encrypt", (r) => window.kopiaAPI.encryptDrive(r, { fullDisk, volumeId }));
+  if (result === "done") {
+    log("Disco " + root + " cifrado con BitLocker. Guarda bien la clave de recuperación.");
+  } else if (result === "cancelled") {
+    log("Cifrado cancelado. El disco no se modificó.");
+  } else if (result === "disconnected") {
+    log("El disco " + root + " se desconectó. BitLocker seguirá cifrando cuando lo vuelvas a conectar.");
+  } else if (result === "timeout") {
+    log("No hay noticias del cifrado de " + root + ". Pulsa \"Comprobar de nuevo\" para ver su estado.");
+  }
+  if (state.destination && state.destination.root === root) await reloadDrivesKeeping(root);
+}
+
+async function lockCurrentDrive() {
+  if (!state.destination) return false;
+  const root = state.destination.root;
+  const volumeId = state.destination.volumeId;
+  const result = await runHelperJob("Lock", (r) => window.kopiaAPI.lockDrive(r, volumeId));
+  if (result === "done") {
+    log("Disco " + root + " bloqueado. Para volver a usarlo, pulsa \"Desbloquear\" o reconéctalo.");
+  }
+  if (state.destination && state.destination.root === root) await reloadDrivesKeeping(root);
+  return result === "done";
+}
+
+async function unlockCurrentDrive() {
+  if (!state.destination) return;
+  const root = state.destination.root;
+  const job = { root, action: "Unlock", phase: "unlocking" };
+  setEncryptionJob(job);
+  try {
+    const status = await window.kopiaAPI.unlockDrive(root);
+    log(status.state === "locked" ? "El disco sigue bloqueado." : "Disco " + root + " desbloqueado.");
+  } catch (error) {
+    log("No se pudo desbloquear: " + error.message);
+  } finally {
+    if (state.encryptionJob === job) setEncryptionJob(null);
+  }
+  if (state.destination && state.destination.root === root) await reloadDrivesKeeping(root);
+}
+
+els.encryptBtn.addEventListener("click", () => {
+  if (!state.destination || state.busy || isSystemProtectedDestination()) return;
+  els.encryptDialogDrive.textContent = state.destination.root;
+  els.encryptDialog.querySelector('input[name="encryptScope"][value="used"]').checked = true;
+  els.encryptDialog.showModal();
+});
+
+els.encryptDialogCancel.addEventListener("click", () => els.encryptDialog.close());
+
+els.encryptDialogConfirm.addEventListener("click", () => {
+  if (isSystemProtectedDestination()) {
+    els.encryptDialog.close();
+    return;
+  }
+  const fullDisk = els.encryptDialog.querySelector('input[name="encryptScope"]:checked').value === "full";
+  els.encryptDialog.close();
+  startEncryption(fullDisk).catch((e) => log(e.message));
+});
+
+els.unlockBtn.addEventListener("click", () => {
+  if (state.busy) return;
+  unlockCurrentDrive().catch((e) => log(e.message));
+});
+
+els.lockBtn.addEventListener("click", () => {
+  if (state.busy || isSystemProtectedDestination()) return;
+  lockCurrentDrive().catch((e) => log(e.message));
+});
+
+els.lockAfterToggle.addEventListener("change", saveState);
+
+els.encryptionOpenBtn.addEventListener("click", async () => {
+  try {
+    await window.kopiaAPI.openBitLockerPanel();
+    log("Se abrió el panel de BitLocker de Windows. Al terminar, pulsa \"Comprobar de nuevo\".");
+  } catch (error) {
+    log("No se pudo abrir el panel de BitLocker: " + error.message);
+  }
+});
+
+els.encryptionRecheckBtn.addEventListener("click", () => {
+  checkEncryption().catch((e) => log(e.message));
+});
+
+els.encryptionAck.addEventListener("change", () => {
+  state.encryptionAck = els.encryptionAck.checked;
+  if (state.encryptionAck && state.destination) {
+    log("Se continuará sin cifrar " + state.destination.root + " (confirmado por el usuario).");
+  }
+  updateCounts();
+});
+
+
 // --- Aviso de backup interrumpido (journal) ---------------------------------
 
 function showJournalNotice(info) {
@@ -675,7 +1100,7 @@ function showJournalNotice(info) {
   els.journalNoticeText.textContent =
     "Se detectó un backup anterior interrumpido (" + when + "). Quedaron " +
     info.pendingFiles + " archivo(s) a medio copiar. Se recomienda eliminarlos " +
-    "para evitar copias corruptas — tus backups completos no se tocan.";
+    "para liberar espacio y evitar copias corruptas — tus backups completos no se tocan.";
   els.journalNotice.hidden = false;
 }
 
@@ -708,60 +1133,69 @@ els.journalSkipBtn.addEventListener("click", () => {
   log("Limpieza pospuesta. Se volverá a avisar la próxima vez que elijas este disco.");
 });
 
-function compareManifests(current, previous) {
-  return (async () => {
-    const newFiles = [];
-    const changedFiles = [];
-    const missingFiles = [];
+// Decide qué cambió contra el último manifiesto.
+//   - Tamaño distinto: cambiado.
+//   - Mismo tamaño y fecha distinta: SHA-256 completo contra el guardado. El
+//     hash rápido (cabecera+cola) no ve ediciones en el medio del archivo
+//     (bases de datos, .pst, discos virtuales), así que ya no decide nada.
+//     Si el manifiesto es de una versión anterior y no tiene SHA-256, se
+//     recopia una vez para registrarlo.
+//   - Con `deep`, también se hashean los que conservan tamaño y fecha.
+// El SHA-256 de lo que se copia lo calcula la propia copia verificada, así que
+// los nuevos y los de tamaño distinto no se leen dos veces.
+// Los que sólo cambiaron de fecha con el mismo contenido van a `touchedFiles`
+// para actualizar su fecha en el manifiesto y no volver a hashearlos.
+async function compareManifests(current, previous, deep) {
+  const newFiles = [];
+  const changedFiles = [];
+  const missingFiles = [];
+  const touchedFiles = [];
+  const entries = Object.entries(current);
+  let checked = 0;
 
-    for (const [filePath, file] of Object.entries(current)) {
-      const old = previous[filePath];
+  for (const [filePath, file] of entries) {
+    checked++;
+    const old = previous[filePath];
 
-      if (!old) {
+    if (!old) {
+      newFiles.push(file);
+      continue;
+    }
+
+    let changed = old.size !== file.size;
+    const dateChanged = old.lastModified !== file.lastModified;
+    if (!changed && (dateChanged || (deep && old.hash))) {
+      if (!old.hash) {
+        changed = true;
+      } else {
         try {
-          file.quickHash = await window.kopiaAPI.quickHashFile(file.fullPath, file.size);
-        } catch {
-          // no crítico: si no se puede leer ahora, se reintentará en el próximo escaneo
-        }
-        newFiles.push(file);
-        continue;
-      }
-
-      let changed = old.size !== file.size;
-      if (!changed && old.lastModified !== file.lastModified) {
-        // Mismo tamaño, distinta fecha: confirmar con hash rápido (cabecera+cola)
-        // para no recopiar archivos que sólo fueron "tocados" sin cambiar contenido.
-        try {
-          const quick = await window.kopiaAPI.quickHashFile(file.fullPath, file.size);
-          file.quickHash = quick;
-          changed = !old.quickHash || old.quickHash !== quick;
+          if (checked % 20 === 0) showProgress("Comparando contenido...", checked, entries.length, filePath);
+          file.hash = await window.kopiaAPI.hashFile(file.fullPath);
+          changed = file.hash !== old.hash;
+          if (!changed && dateChanged) touchedFiles.push(file);
         } catch {
           changed = true;
         }
-      } else if (!changed) {
-        file.quickHash = old.quickHash;
-      } else {
-        // Tamaño distinto: ya sabemos que cambió sin necesidad de hashear, pero
-        // igual se guarda el quickHash actual en el manifiesto. Si no se hiciera,
-        // el próximo escaneo (si el tamaño vuelve a coincidir y sólo cambia la
-        // fecha) no tendría con qué comparar y recopiaría el archivo sin necesidad.
-        try {
-          file.quickHash = await window.kopiaAPI.quickHashFile(file.fullPath, file.size);
-        } catch {
-          // no crítico: simplemente no quedará quickHash guardado para este archivo
-        }
       }
-
-      if (changed) changedFiles.push({ ...file, previous: old });
+    } else if (!changed) {
+      file.hash = old.hash || null;
     }
 
-    for (const [filePath, file] of Object.entries(previous)) {
-      if (!current[filePath]) missingFiles.push(file);
-    }
+    if (changed) changedFiles.push({ ...file, previous: old });
+  }
 
-    return { newFiles, changedFiles, missingFiles };
-  })();
+  for (const [filePath, file] of Object.entries(previous)) {
+    if (!current[filePath]) missingFiles.push(file);
+  }
+
+  return { newFiles, changedFiles, missingFiles, touchedFiles };
 }
+
+const SKIP_REASONS = {
+  enlace: "Enlace o junction (no se sigue)",
+  "sin-permiso": "Sin permiso de lectura",
+  ilegible: "No se pudo leer",
+};
 
 async function scanAll() {
   if (state.busy || !state.sources.length) {
@@ -799,23 +1233,19 @@ async function scanAll() {
         log("Escaneando " + source.name + "...");
         showProgress("Escaneando...", i, state.sources.length, source.name);
 
-        const previous = state.destination
-          ? await window.kopiaAPI.loadManifest(state.destination.root, source.name)
-          : {};
-
-        const current = await window.kopiaAPI.scanDirectory(source.path, excludePatterns);
-
-        const diff = await compareManifests(current, previous);
-
-        if (els.hashToggle.checked) {
-          for (const item of diff.changedFiles) {
-            try {
-              item.hash = await window.kopiaAPI.hashFile(item.fullPath);
-            } catch {
-              // skip unhashable files
-            }
-          }
+        let previous = {};
+        if (state.destination) {
+          const loaded = await window.kopiaAPI.loadManifest(state.destination.root, source.name);
+          previous = loaded.manifest;
+          if (loaded.warning) log("Atención: " + loaded.warning);
         }
+
+        const scan = await window.kopiaAPI.scanDirectory(source.path, excludePatterns);
+        const current = scan.files;
+
+        const diff = await compareManifests(current, previous, els.hashToggle.checked);
+
+        const skipped = scan.skipped.map((s) => ({ path: s.path, detail: SKIP_REASONS[s.reason] || s.reason }));
 
         state.comparisons.push({
           sourceName: source.name,
@@ -823,6 +1253,8 @@ async function scanAll() {
           manifest: current,
           previousManifest: previous,
           ...diff,
+          skipped,
+          excludedCount: scan.excluded,
           decisions: { new: true, changed: true, missing: false },
         });
         log(
@@ -833,7 +1265,9 @@ async function scanAll() {
             diff.changedFiles.length +
             " cambiados, " +
             diff.missingFiles.length +
-            " eliminados."
+            " eliminados." +
+            (skipped.length ? " " + skipped.length + " omitido(s) (ver detalle)." : "") +
+            (scan.excluded ? " " + scan.excluded + " excluido(s) por filtros." : "")
         );
       } catch (error) {
         failures++;
@@ -922,6 +1356,15 @@ function renderComparisons() {
         "Ya no están en tu PC, pero siguen guardados en el backup: no se borra nada."
       )
     );
+    if (comparison.skipped.length) {
+      groups.appendChild(
+        fileGroup(
+          "Omitidos (no se respaldan)",
+          comparison.skipped,
+          "Enlaces, carpetas sin permiso o archivos que no se pudieron leer. No quedan en el backup."
+        )
+      );
+    }
     els.changesView.appendChild(node);
   });
 }
@@ -964,9 +1407,9 @@ function fileGroup(title, files, hint) {
       nameEl.textContent = file.path;
       nameEl.title = file.path;
       const sizeEl = document.createElement("span");
-      sizeEl.textContent = formatBytes(file.size);
+      sizeEl.textContent = file.size != null ? formatBytes(file.size) : "";
       const dateEl = document.createElement("span");
-      dateEl.textContent = new Date(file.lastModified).toLocaleString();
+      dateEl.textContent = file.detail || (file.lastModified ? new Date(file.lastModified).toLocaleString() : "");
       row.appendChild(nameEl);
       row.appendChild(sizeEl);
       row.appendChild(dateEl);
@@ -979,7 +1422,7 @@ function fileGroup(title, files, hint) {
       more.textContent = "+ " + (files.length - MAX_RENDERED_FILES) + " más";
       const empty = document.createElement("span");
       const note = document.createElement("span");
-      note.textContent = "Se copiarán aunque no se listen aquí.";
+      note.textContent = "No se listan todos aquí; el detalle completo queda en el log del backup.";
       row.appendChild(more);
       row.appendChild(empty);
       row.appendChild(note);
@@ -1041,6 +1484,7 @@ async function backupAll() {
   }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let completed = false;
   let totalCopied = 0;
   let totalDeduped = 0;
 
@@ -1068,22 +1512,34 @@ async function backupAll() {
   }
 
   try {
+    const maxFileSize = state.destination.maxFileSize || 0;
     for (const comparison of state.comparisons) {
-      const selected = [
+      const wanted = [
         ...(comparison.decisions.new ? comparison.newFiles : []),
         ...(comparison.decisions.changed ? comparison.changedFiles : []),
       ];
+      // FAT32: los de 4 GB o más fallarían; se omiten y se informan. Como no
+      // entran al manifiesto, vuelven a aparecer en el próximo escaneo.
+      const tooLarge = maxFileSize ? wanted.filter((f) => f.size > maxFileSize) : [];
+      const selected = tooLarge.length ? wanted.filter((f) => f.size <= maxFileSize) : wanted;
+      tooLarge.forEach((f) =>
+        log("Omitido: " + comparison.sourceName + "/" + f.path + " — archivo de 4 GB o más en disco FAT32.")
+      );
       const removingMissing = comparison.decisions.missing && comparison.missingFiles.length > 0;
+      const touched = comparison.touchedFiles || [];
 
       // Aunque no haya nada para copiar, si el usuario aceptó "eliminados" hay
       // que seguir para actualizar el manifiesto (si no, esos archivos seguirían
       // marcándose como faltantes en cada escaneo aunque el usuario ya lo aceptó).
-      if (!selected.length && !removingMissing) continue;
+      // Igual con los "tocados" (fecha nueva, mismo contenido).
+      if (!selected.length && !removingMissing && !touched.length) continue;
 
       const tasks = [];
       const versionTasks = [];
+      const destRelativeOf = new Map();
       for (const item of selected) {
         const destRelative = BACKUP_ROOT + "/" + safeName(comparison.sourceName) + "/" + item.path;
+        destRelativeOf.set(item.path, destRelative);
         tasks.push({
           srcPath: item.fullPath,
           destRoot: state.destination.root,
@@ -1110,6 +1566,10 @@ async function backupAll() {
         }
       }
 
+      // relativeDest -> SHA-256 de lo que se copió y verificó.
+      const doneHashes = new Map();
+      let copyErrors = [];
+
       if (tasks.length) {
         if (versionTasks.length) {
           const versionResult = await window.kopiaAPI.backupCopyVersions(versionTasks);
@@ -1127,17 +1587,34 @@ async function backupAll() {
         const result = await window.kopiaAPI.backupCopyFiles(tasks, { dedup, concurrency });
         totalCopied += result.copied;
         totalDeduped += result.deduped || 0;
+        (result.done || []).forEach((d) => doneHashes.set(d.relativeDest, d.hash));
+        copyErrors = result.errors;
 
         if (result.errors.length) {
           result.errors.forEach((e) => log("Error: " + e.file + " — " + e.error));
         }
       }
 
+      // Sólo se registran como respaldados los archivos que de verdad se
+      // copiaron y verificaron. Un nuevo que falló no entra (vuelve a salir
+      // como nuevo); un cambiado que falló conserva su entrada anterior
+      // (vuelve a salir como cambiado).
       const nextManifest = { ...comparison.previousManifest };
+      let registered = 0;
       selected.forEach((item) => {
+        const hash = doneHashes.get(destRelativeOf.get(item.path));
+        if (!hash) return;
         const entry = { ...comparison.manifest[item.path] };
         delete entry.fullPath;
+        delete entry.quickHash;
+        entry.hash = hash;
         nextManifest[item.path] = entry;
+        registered++;
+      });
+      touched.forEach((item) => {
+        if (nextManifest[item.path] && nextManifest[item.path].hash === item.hash) {
+          nextManifest[item.path] = { ...nextManifest[item.path], lastModified: item.lastModified };
+        }
       });
       if (comparison.decisions.missing) {
         comparison.missingFiles.forEach((item) => delete nextManifest[item.path]);
@@ -1151,7 +1628,11 @@ async function backupAll() {
       const report = {
         date: new Date().toISOString(),
         source: comparison.sourceName,
-        copied: selected.length,
+        copied: registered,
+        failed: copyErrors.map((e) => ({ file: e.file, error: e.error })),
+        tooLargeForFileSystem: tooLarge.map((f) => f.path),
+        skippedByScan: comparison.skipped,
+        excludedByFilters: comparison.excludedCount || 0,
         skippedNew: comparison.decisions.new ? 0 : comparison.newFiles.length,
         skippedChanged: comparison.decisions.changed ? 0 : comparison.changedFiles.length,
         missingRegistered: comparison.decisions.missing
@@ -1159,8 +1640,10 @@ async function backupAll() {
           : [],
       };
       await window.kopiaAPI.logSave(state.destination.root, comparison.sourceName, report);
+      const notDone = selected.length - registered;
       log(
-        comparison.sourceName + ": " + selected.length + " archivos copiados." +
+        comparison.sourceName + ": " + registered + " archivos copiados y verificados." +
+          (notDone > 0 ? " " + notDone + " no se pudieron copiar (se reintentarán en el próximo backup)." : "") +
           (removingMissing ? " Eliminados registrados: " + comparison.missingFiles.length + "." : "")
       );
     }
@@ -1171,11 +1654,24 @@ async function backupAll() {
     let summary = "Copia finalizada: " + totalCopied + " archivos.";
     if (totalDeduped > 0) summary += " (" + totalDeduped + " deduplicados sin copiar bytes nuevos)";
     log(summary);
+    completed = true;
   } catch (error) {
     log("Error en backup: " + error.message);
   } finally {
     setBusy(false);
     hideProgress();
+  }
+
+  // Bloquear al terminar (pide el permiso de administrador de Windows).
+  if (
+    completed &&
+    els.lockAfterToggle.checked &&
+    state.encryption &&
+    state.encryption.state === "on" &&
+    !isSystemProtectedDestination()
+  ) {
+    log("Backup terminado: bloqueando " + state.destination.root + " como pediste...");
+    await lockCurrentDrive();
   }
 }
 
@@ -1213,6 +1709,7 @@ async function compareSelected() {
 
       const result = await window.kopiaAPI.restoreScan(state.destination.root, sourceName, sel.localPath);
       await window.kopiaAPI.rememberSourcePath(state.destination.root, sourceName, sel.localPath).catch(() => {});
+      if (result.warning) log("Atención: " + result.warning);
 
       // Archivos que figuran como respaldados pero ya no están en el disco de
       // backup (p. ej. borrados a mano de la copia). Se avisa y se ofrece
@@ -1340,7 +1837,7 @@ function renderLostFilesCard(sourceName, lostFiles) {
     setBusy(true);
     repairBtn.disabled = true;
     try {
-      const manifest = await window.kopiaAPI.loadManifest(destRoot, sourceName);
+      const { manifest } = await window.kopiaAPI.loadManifest(destRoot, sourceName);
       lostFiles.forEach((file) => delete manifest[file.path]);
       await window.kopiaAPI.saveManifest(destRoot, sourceName, manifest);
       repairBtn.textContent = "Listos para recopiar";
@@ -1599,6 +2096,7 @@ async function saveState() {
       dedup: els.dedupToggle.checked,
       advanced: els.advancedToggle.checked,
       excludePatterns: getCustomExcludePatterns(),
+      lockAfterBackup: els.lockAfterToggle.checked,
     });
   } catch {
     // non-critical
@@ -1635,6 +2133,9 @@ async function loadState() {
       els.advancedToggle.checked = settings.advanced;
       els.driveInfo.hidden = !settings.advanced;
     }
+    if (typeof settings.lockAfterBackup === "boolean") {
+      els.lockAfterToggle.checked = settings.lockAfterBackup;
+    }
     if (Array.isArray(settings.excludePatterns) && settings.excludePatterns.length) {
       els.excludeInput.value = settings.excludePatterns.join("\n");
     }
@@ -1663,7 +2164,7 @@ function applyPendingDestination() {
 
 function clearHistory() {
   if (state.busy) return;
-  els.logList.innerHTML = "";
+  els.logList.textContent = "";
 }
 
 els.addSourceBtn.addEventListener("click", () => addSource().catch((e) => log(e.message)));

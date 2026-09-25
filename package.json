@@ -21,6 +21,9 @@
       "target": "nsis",
       "icon": "assets/Kopia_Desk_icon.png"
     },
+    "asarUnpack": [
+      "lib/bitlocker-helper.ps1"
+    ],
     "files": [
       "main.js",
       "preload.js",

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>Kopia Desk</title>
     <link rel="stylesheet" href="styles.css" />
@@ -125,6 +125,7 @@
 
         <main class="canvas">
           <div id="spaceWarning" class="warning" hidden></div>
+          <div id="fsWarning" class="warning" hidden></div>
 
           <!-- Aviso de backup interrumpido: se pide confirmación antes de limpiar -->
           <div id="journalNotice" class="warning" hidden>
@@ -251,6 +252,32 @@
                   <div id="driveInfo" class="hint" hidden></div>
                 </div>
 
+                <!-- Estado de cifrado del destino (BitLocker): cifrar, desbloquear y
+                     bloquear desde aquí. La contraseña y la clave de recuperación
+                     nunca pasan por la app: las piden ventanas de Windows o del
+                     ayudante elevado (lib/bitlocker-helper.ps1). -->
+                <div id="encryptionPanel" class="encryption-panel" hidden>
+                  <p id="encryptionStatus"></p>
+                  <div id="encryptionProgress" class="encryption-progress" hidden>
+                    <div id="encryptionProgressFill" class="encryption-progress-fill"></div>
+                  </div>
+                  <div class="notice-actions">
+                    <button id="encryptBtn" class="primary" type="button" hidden>Cifrar este disco</button>
+                    <button id="unlockBtn" class="primary" type="button" hidden>Desbloquear</button>
+                    <button id="lockBtn" class="ghost" type="button" hidden>Bloquear ahora</button>
+                    <button id="encryptionOpenBtn" class="ghost" type="button" hidden>Abrir panel de BitLocker</button>
+                    <button id="encryptionRecheckBtn" class="ghost" type="button">Comprobar de nuevo</button>
+                  </div>
+                  <label id="lockAfterLabel" class="warning-ack" hidden>
+                    <input id="lockAfterToggle" type="checkbox" />
+                    Bloquear el disco al terminar el backup
+                  </label>
+                  <label id="encryptionAckLabel" class="warning-ack" hidden>
+                    <input id="encryptionAck" type="checkbox" />
+                    Entiendo el riesgo: continuar sin cifrar este disco
+                  </label>
+                </div>
+
                 <div class="dest-actions">
                   <button id="refreshDrivesBtn" class="link-btn" type="button">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -296,12 +323,12 @@
                 </label>
                 <label
                   class="option-row"
-                  title="Compara el contenido completo de cada archivo (SHA-256). Es más lento, pero asegura que el contenido realmente cambió."
+                  title="Los archivos con fecha nueva siempre se comparan por SHA-256 completo. Esta opción revisa también los que conservan tamaño y fecha: más lento, pero detecta cambios que no alteraron la fecha."
                 >
                   <input id="hashToggle" type="checkbox" class="switch" />
                   <div>
                     <div class="option-title">Verificación profunda</div>
-                    <div class="option-desc">Hash SHA-256 completo por archivo, más lento pero más seguro.</div>
+                    <div class="option-desc">Revisa por SHA-256 también los archivos sin fecha nueva. Más lento.</div>
                   </div>
                 </label>
                 <label
@@ -407,6 +434,37 @@
         </main>
       </div>
     </div>
+
+    <!-- Confirmación antes de cifrar: explica los pasos y el alcance. -->
+    <dialog id="encryptDialog" class="kd-dialog" aria-labelledby="encryptDialogTitle">
+      <h2 id="encryptDialogTitle">Cifrar el disco <span id="encryptDialogDrive"></span></h2>
+      <p>
+        Kopia Desk usa BitLocker, el cifrado de Windows. Cuando termine, el disco pedirá contraseña cada vez que lo
+        conectes, en este o en otro equipo con Windows. Tus archivos siguen siendo archivos normales.
+      </p>
+      <ol class="kd-steps">
+        <li>Windows te pedirá permiso de administrador.</li>
+        <li>En una ventana de Kopia Desk eliges la contraseña (mínimo 12 caracteres).</li>
+        <li>Guardas la clave de recuperación <strong>fuera de este disco</strong>. Sin guardarla no se continúa.</li>
+        <li>El cifrado sigue en segundo plano: puedes usar el disco mientras tanto, aunque irá más lento.</li>
+      </ol>
+      <fieldset class="kd-scope">
+        <legend>Qué cifrar</legend>
+        <label>
+          <input type="radio" name="encryptScope" value="used" checked />
+          <span><strong>Solo el espacio usado</strong> — rápido. Recomendado para discos nuevos o vacíos.</span>
+        </label>
+        <label>
+          <input type="radio" name="encryptScope" value="full" />
+          <span><strong>Disco completo</strong> — más lento. Recomendado si el disco tuvo datos antes: cifra también lo borrado.</span>
+        </label>
+      </fieldset>
+      <p class="hint">No desconectes el disco mientras se cifra. Si se desconecta, el cifrado continúa al volver a conectarlo.</p>
+      <div class="kd-dialog-actions">
+        <button id="encryptDialogCancel" class="ghost" type="button">Cancelar</button>
+        <button id="encryptDialogConfirm" class="primary" type="button">Continuar</button>
+      </div>
+    </dialog>
 
     <template id="folderTemplate">
       <article class="folder-card">
