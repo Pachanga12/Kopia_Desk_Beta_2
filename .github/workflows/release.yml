@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag a crear para el release (ej. v2.0.0)"
+        required: true
+        default: "v2.0.0"
 
 jobs:
   build-and-release:
@@ -32,5 +37,6 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
           files: dist/*.exe
           generate_release_notes: true
