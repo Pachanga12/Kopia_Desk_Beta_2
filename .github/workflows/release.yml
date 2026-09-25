@@ -32,7 +32,7 @@ jobs:
         run: npm test
 
       - name: Build installer
-        run: npm run build
+        run: npm run build -- --publish never
 
       - name: Create release
         uses: softprops/action-gh-release@v2
