@@ -104,7 +104,11 @@ test("safeBackupPath rechaza rutas fuera de la carpeta de backup aunque sigan de
   );
 });
 
-test("safeBackupPath rechaza ../.. dentro del mismo disco (safePath sola no lo detectaba con root=raíz del disco)", () => {
+test("safeBackupPath rechaza ../.. dentro del mismo disco (safePath sola no lo detectaba con root=raíz del disco)", (t) => {
+  if (process.platform !== "win32") {
+    t.skip("Requiere semántica de unidades de disco de Windows (D:\\)");
+    return;
+  }
   const driveRoot = path.resolve("D:/");
   // "../../Windows/System32" desde la raíz del disco resuelve a "D:\Windows\System32":
   // sigue estando dentro de "D:\", así que safePath() por sí sola lo dejaría pasar.
@@ -112,7 +116,11 @@ test("safeBackupPath rechaza ../.. dentro del mismo disco (safePath sola no lo d
   assert.throws(() => safeBackupPath(driveRoot, "../../Windows/System32"), /fuera de la carpeta de backup/);
 });
 
-test("safeBackupPath también rechaza un intento de escapar del disco por completo", () => {
+test("safeBackupPath también rechaza un intento de escapar del disco por completo", (t) => {
+  if (process.platform !== "win32") {
+    t.skip("Requiere semántica de unidades de disco de Windows (C:\\ vs D:\\)");
+    return;
+  }
   const driveRoot = path.resolve("D:/");
   assert.throws(() => safeBackupPath(driveRoot, "C:\\Windows\\System32"), /fuera del disco destino/);
 });
