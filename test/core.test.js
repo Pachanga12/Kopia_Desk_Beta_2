@@ -17,6 +17,8 @@ const {
   hashFileAsync,
   quickHashFile,
   copyFileReplacing,
+  copyFileWithRetry,
+  verifyCopiedFile,
   pickConcurrency,
   startJournal,
   appendJournalDone,
@@ -252,6 +254,92 @@ test("copyFileReplacing funciona igual si el destino todavía no existe", async 
 
   await copyFileReplacing(src, dest);
   assert.equal(fs.readFileSync(dest, "utf-8"), "hola");
+});
+
+// --- copyFileWithRetry -----------------------------------------------------
+
+test("copyFileWithRetry copia normalmente en el primer intento", async (t) => {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const src = path.join(dir, "src.txt");
+  const dest = path.join(dir, "dest.txt");
+  fs.writeFileSync(src, "datos de prueba");
+
+  const ok = await copyFileWithRetry(src, dest, { retries: 2, delayMs: 10 });
+  assert.equal(ok, true);
+  assert.equal(fs.readFileSync(dest, "utf-8"), "datos de prueba");
+});
+
+test("copyFileWithRetry falla de inmediato si el error no es transitorio (ej. ENOENT)", async (t) => {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const nonExistentSrc = path.join(dir, "no-existe.txt");
+  const dest = path.join(dir, "dest.txt");
+
+  await assert.rejects(
+    async () => {
+      await copyFileWithRetry(nonExistentSrc, dest, { retries: 2, delayMs: 10 });
+    },
+    (err) => err.code === "ENOENT"
+  );
+});
+
+// --- verifyCopiedFile ------------------------------------------------------
+
+test("verifyCopiedFile valida con éxito cuando origen y destino coinciden", async (t) => {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const src = path.join(dir, "src.txt");
+  const dest = path.join(dir, "dest.txt");
+  fs.writeFileSync(src, "contenido idéntico");
+  fs.writeFileSync(dest, "contenido idéntico");
+
+  const validSize = await verifyCopiedFile(src, dest, "size");
+  assert.equal(validSize, true);
+
+  const validHash = await verifyCopiedFile(src, dest, "hash");
+  assert.equal(validHash, true);
+});
+
+test("verifyCopiedFile detecta y rechaza un archivo truncado o con distinto tamaño", async (t) => {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const src = path.join(dir, "src.txt");
+  const dest = path.join(dir, "dest.txt");
+  fs.writeFileSync(src, "contenido completo de 30 bytes!");
+  fs.writeFileSync(dest, "truncado");
+
+  await assert.rejects(
+    async () => {
+      await verifyCopiedFile(src, dest, "size");
+    },
+    /Verificación fallida/
+  );
+});
+
+test("verifyCopiedFile en modo hash detecta contenido corrupto aunque tengan el mismo tamaño", async (t) => {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const src = path.join(dir, "src.txt");
+  const dest = path.join(dir, "dest.txt");
+  fs.writeFileSync(src, "ABCDEFGH");
+  fs.writeFileSync(dest, "12345678"); // Mismo tamaño (8 bytes), contenido distinto
+
+  // En modo size pasa porque tienen 8 bytes
+  assert.equal(await verifyCopiedFile(src, dest, "size"), true);
+
+  // En modo hash debe fallar
+  await assert.rejects(
+    async () => {
+      await verifyCopiedFile(src, dest, "hash");
+    },
+    /hash corrupto/
+  );
 });
 
 test("hashFileAsync calcula un SHA-256 completo y determinista", async (t) => {

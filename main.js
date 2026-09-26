@@ -16,6 +16,8 @@ const {
   hashFileAsync,
   quickHashFile,
   copyFileReplacing,
+  copyFileWithRetry,
+  verifyCopiedFile,
   listDrives,
   detectDriveType,
   pickConcurrency,
@@ -263,11 +265,10 @@ async function copyOneTask(task, dedupIndex, pendingWrites) {
   }
 
   try {
-    // copyFileReplacing borra target antes de copiar en vez de sobreescribirlo
-    // en el sitio: si target fuera un hardlink compartido con otro archivo del
-    // backup (deduplicación), sobreescribir en el sitio corrompería a ese otro
-    // archivo aunque su origen no haya cambiado.
-    await copyFileReplacing(task.srcPath, target);
+    // copyFileWithRetry reintenta ante bloqueos temporales de Windows y borra
+    // target antes de copiar para no corromper hardlinks existentes de dedup.
+    await copyFileWithRetry(task.srcPath, target, { retries: 3, delayMs: 80 });
+    await verifyCopiedFile(task.srcPath, target, task.deepVerify ? "hash" : "size");
   } catch (err) {
     // Si la copia "titular" falla, se libera a quienes esperaban enlazarse a
     // ella (null = "no hay nada que enlazar"), para que copien por su cuenta
@@ -487,7 +488,8 @@ ipcMain.handle("restore:copy-files", async (event, files, targetDir, options = {
       const dest = safePath(targetDir, file.path);
       const source = assertBackupSourcePath(file.backupFullPath);
       await fs.promises.mkdir(path.dirname(dest), { recursive: true });
-      await fs.promises.copyFile(source, dest);
+      await copyFileWithRetry(source, dest, { retries: 3, delayMs: 80 });
+      await verifyCopiedFile(source, dest, "size");
       copied++;
       event.sender.send("progress", {
         phase: "restore",

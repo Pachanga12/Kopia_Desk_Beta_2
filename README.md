@@ -3,7 +3,8 @@
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Electron](https://img.shields.io/badge/Electron-43-47848F?logo=electron&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A5%2020-339933?logo=nodedotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-37%20passing-brightgreen?logo=nodedotjs&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen?logo=nodedotjs&logoColor=white)
+[![CI](https://github.com/Pachanga12/Kopia_Desk_Beta_2/actions/workflows/ci.yml/badge.svg)](https://github.com/Pachanga12/Kopia_Desk_Beta_2/actions/workflows/ci.yml)
 ![Licencia](https://img.shields.io/badge/licencia-MIT-blue)
 
 Aplicación de escritorio para copias de seguridad incrementales en Windows. Permite respaldar carpetas como Imágenes, Documentos o Descargas a discos externos o USB.
@@ -51,6 +52,12 @@ npm test
   active "Mostrar detalles técnicos" en Opciones.
 - Deduplicación por contenido: si un archivo ya existe en el backup (aunque esté
   en otra carpeta o con otro nombre), se enlaza en vez de copiarse de nuevo.
+- Copia resiliente con reintento y backoff exponencial: maneja bloqueos temporales
+  de archivos en Windows (antivirus, SearchIndexer, OneDrive, EBUSY/EPERM) reintentando
+  automáticamente antes de reportar error.
+- Verificación de integridad post-copia: valida que el archivo en el destino
+  coincida exactamente en tamaño y hash con el origen antes de confirmar la tarea,
+  evitando copias truncadas por desconexión o fallos en USB/discos.
 - Versionado opcional: antes de sobrescribir un archivo cambiado en el backup,
   guarda su versión anterior comprimida con gzip en `.kopia-data\versions\<fecha>\`.
 - Verificación profunda opcional con hash SHA-256 completo.

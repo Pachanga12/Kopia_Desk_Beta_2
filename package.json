@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
+    "lint": "node --check main.js preload.js lib/core.js test/core.test.js renderer/app.js",
     "build": "electron-builder --win"
   },
   "author": "Kopia Desk",
